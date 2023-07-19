@@ -51,6 +51,7 @@ def schedule_trade(data):
 
         # Extract UserOperationHash from response
         logger.info('Extracting UserOperationHash from response')
+        logger.info(response.json())
         user_op_hash = response.json()['result']
 
         # After operation is performed, update database
