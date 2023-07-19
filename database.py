@@ -1,92 +1,102 @@
 import os
 import pymysql
-from contextlib import contextmanager
 import logging
+import time
+from functools import wraps
 
-# 创建日志记录器
-logger = logging.getLogger(__name__)
+class Database:
+    MAX_RETRIES = 5
+    RETRY_DELAY = 5
 
-# 创建 MySQL 连接的上下文管理器
-@contextmanager
-def get_connection():
-    connection = pymysql.connect(
-        host=os.getenv('DB_HOST'),
-        port=int(os.getenv('DB_PORT')),
-        user=os.getenv('DB_USER'),
-        password=os.getenv('DB_PASSWORD'),
-        database=os.getenv('DB_NAME'),
-        charset='utf8mb4',
-        cursorclass=pymysql.cursors.DictCursor
-    )
-    try:
-        yield connection
-    finally:
-        connection.close()
+    def __init__(self):
+        self.host = os.getenv('DB_HOST')
+        self.port = os.getenv('DB_PORT')
+        self.user = os.getenv('DB_USER')
+        self.password = os.getenv('DB_PASSWORD')
+        self.database = os.getenv('DB_NAME')
+        self.cnx = None
+        logging.info(f"connect db {self.host}:{self.port} {self.user} ")
+        self.connect_and_initialize()
 
-# 自定义装饰器，用于记录日志和处理异常
-def handle_exceptions(func):
-    def wrapper(*args, **kwargs):
-        logger.info(f"Entering {func.__name__}")
-        try:
-            return func(*args, **kwargs)
-        except pymysql.OperationalError as e:
-            logger.exception(f"Database error in {func.__name__}: {str(e)}. Retrying...")
-            return func(*args, **kwargs)  # Retry the function
-        except Exception as e:
-            logger.exception(f"Error in {func.__name__}: {str(e)}")
-            raise
-        finally:
-            logger.info(f"Exiting {func.__name__}")
-    return wrapper
+    def retry_on_failure(func):
+        @wraps(func)
+        def wrapper(self, *args, **kwargs):
+            retries = 0
+            while retries < self.MAX_RETRIES:
+                try:
+                    if self.cnx is None or not self.cnx.open:
+                        self.connect()
+                    result = func(self, *args, **kwargs)
+                    logging.info(f"{func.__name__} executed successfully")
+                    return result
+                except (pymysql.MySQLError, pymysql.OperationalError) as error:
+                    logging.error(f"Error occurred in {func.__name__}: {str(error)}")
+                    if retries < self.MAX_RETRIES - 1:
+                        logging.info(f"Retrying in {self.RETRY_DELAY} seconds...")
+                        time.sleep(self.RETRY_DELAY)
+                        retries += 1
+                    else:
+                        raise Exception(f"Could not execute {func.__name__} after {self.MAX_RETRIES} attempts")
 
-# 创建调度的交易表
-@handle_exceptions
-def create_scheduled_userop_table():
-    with get_connection() as connection, connection.cursor() as cursor:
-        query = """
-        CREATE TABLE IF NOT EXISTS scheduled_userop (
-            userophash VARCHAR(255) PRIMARY KEY,
-            status VARCHAR(255) NOT NULL,
-            task_id VARCHAR(255),
+        return wrapper
+
+    def connect(self):
+        self.cnx = pymysql.connect(
+            host=self.host,
+            port=int(self.port),
+            user=self.user,
+            password=self.password,
+            db=self.database,
+            charset='utf8mb4',
+            cursorclass=pymysql.cursors.DictCursor
         )
+
+    @retry_on_failure
+    def connect_and_initialize(self):
+        self.connect()
+
+        create_table_query = """
+            CREATE TABLE IF NOT EXISTS scheduled_userop (
+                userophash VARCHAR(255) PRIMARY KEY,
+                status VARCHAR(255),
+                time DATETIME,
+                task_id VARCHAR(255)
+            )
         """
-        cursor.execute(query)
-    connection.commit()
+        with self.cnx.cursor() as cursor:
+            cursor.execute(create_table_query)
 
-# 根据 userop 获取调度的交易信息
-@handle_exceptions
-def get_scheduled_userop_by_userophash(userophash: str):
-    with get_connection() as connection, connection.cursor() as cursor:
-        query = "SELECT * FROM scheduled_userop WHERE userophash = %s"
-        cursor.execute(query, userophash)
-        result = cursor.fetchone()
-        if result:
-            return result
-        return None
+        self.cnx.commit()
 
-# 获取所有调度的交易
-@handle_exceptions
-def get_all_scheduled_userops():
-    with get_connection() as connection, connection.cursor() as cursor:
-        query = "SELECT * FROM scheduled_userop"
-        cursor.execute(query)
-        results = cursor.fetchall()
-        return results
+        logging.info("table get or create successfully")
 
-# 创建调度的交易
-@handle_exceptions
-def create_scheduled_userop(userophash: str, status: str):
-    with get_connection() as connection, connection.cursor() as cursor:
-        query = "INSERT IGNORE INTO scheduled_userop (userophash, status) VALUES (%s, %s)"
-        values = (userophash, status)
-        cursor.execute(query, values)
-    connection.commit()
+    @retry_on_failure
+    def insert_scheduled_userop(self, userophash, status, task_id, time):
+        with self.cnx.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO scheduled_userop (userophash, status, task_id, time)
+                VALUES (%s, %s, %s, %s)
+            """, (userophash, status, task_id, time))
+            self.cnx.commit()
 
-# 更新调度的交易状态
-@handle_exceptions
-def update_scheduled_userop_status(userophash: str, status: str):
-    with get_connection() as connection, connection.cursor() as cursor:
-        query = "UPDATE scheduled_userop SET status = %s WHERE userophash = %s"
-        values = (status, userophash)
-        cursor.execute(query, values)
-    connection.commit()
+    @retry_on_failure
+    def get_scheduled_userop(self, userophash):
+        with self.cnx.cursor() as cursor:
+            cursor.execute("SELECT * FROM scheduled_userop WHERE userophash = %s", (userophash,))
+            return cursor.fetchone()
+
+    @retry_on_failure
+    def get_all_scheduled_userops(self):
+        with self.cnx.cursor() as cursor:
+            cursor.execute("SELECT * FROM scheduled_userop")
+            return cursor.fetchall()
+
+    @retry_on_failure
+    def update_scheduled_userop_status(self, userophash, status):
+        with self.cnx.cursor() as cursor:
+            cursor.execute("""
+                UPDATE scheduled_userop
+                SET status = %s
+                WHERE userophash = %s
+            """, (status, userophash))
+            self.cnx.commit()

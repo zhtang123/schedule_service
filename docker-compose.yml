@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  web:
+    build: .
+    volumes:
+      - .:/app
+    ports:
+      - "12010:12010"
+    env_file:
+      - .env
+    depends_on:
+      - redis
+
+  worker:
+    build: .
+    command: celery -A tasks worker --loglevel=info
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      - web
+
+  flower:
+    image: mher/flower
+    command: celery flower --broker=${CELERY_BROKER_URL}  # Correct the command line here
+    ports:
+      - "12011:5555"
+    env_file:
+      - .env
+
+  redis:
+    image: redis:latest
+    # Redis service is not exposed to the host
