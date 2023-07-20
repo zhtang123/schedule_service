@@ -80,7 +80,7 @@ def send_user_operation(data):
 
     except Exception as e:
         logger.error(response.json())
-        db.update_scheduled_userop_status(get_user_op_hash(data['userop'], data['entrypoint'], chainid), 'failed')
+        db.update_scheduled_userop_status(get_user_op_hash(data['userop'], data['entrypoint'], get_chainid(data['chain'])), 'failed')
         raise e
 
     logger.info('Received UserOperationHash %s', user_op_hash)
