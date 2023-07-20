@@ -56,7 +56,7 @@ def update_gas_prices_in_userop(data, suggested_max_fee_per_gas, suggested_max_p
     if old_userop_hash != new_userop_hash:
         db.update_modified_userop(old_userop_hash, new_userop_hash)
 
-    return data
+    return data, old_userop_hash, new_userop_hash
 
 def send_user_operation(data):
     logger.info('Sending user operation')
@@ -71,6 +71,8 @@ def send_user_operation(data):
         "params": [data['userop'], data['entrypoint']]
     }
 
+    logger.info(payload)
+
     response = requests.post(url, headers=headers, data=json.dumps(payload))
     response.raise_for_status()
 
@@ -80,7 +82,6 @@ def send_user_operation(data):
 
     except Exception as e:
         logger.error(response.json())
-        db.update_scheduled_userop_status(get_user_op_hash(data['userop'], data['entrypoint'], get_chainid(data['chain'])), 'failed')
         raise e
 
     logger.info('Received UserOperationHash %s', user_op_hash)
@@ -114,10 +115,15 @@ def schedule_trade(data):
         suggested_max_fee_per_gas, suggested_max_priority_fee_per_gas = fetch_gas_prices(chainid)
 
         # Update userop with suggested gas prices
-        data = update_gas_prices_in_userop(data, suggested_max_fee_per_gas, suggested_max_priority_fee_per_gas, chainid)
+        data, oldhash, newhash = update_gas_prices_in_userop(data, suggested_max_fee_per_gas, suggested_max_priority_fee_per_gas, chainid)
 
         # Send User Operation
-        user_op_hash = send_user_operation(data)
+        try:
+            user_op_hash = send_user_operation(data)
+        except Exception as e:
+            db.update_scheduled_userop_status(oldhash, 'failed')
+            db.update_scheduled_userop_status(newhash, 'failed')
+            raise e
 
         # Trigger the next operation
         trigger_next_operation(data, user_op_hash)

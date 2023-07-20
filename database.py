@@ -117,8 +117,9 @@ class Database:
     def update_scheduled_userop_status(self, userophash, status):
         with self.cnx.cursor() as cursor:
             cursor.execute("""
-                UPDATE scheduled_userop
-                SET status = %s
-                WHERE userophash = %s
-            """, (status, userophash))
+                INSERT INTO scheduled_userop (userophash, status)
+                VALUES (%s, %s)
+                ON DUPLICATE KEY UPDATE
+                status = VALUES(status)
+            """, (userophash, status))
             self.cnx.commit()
