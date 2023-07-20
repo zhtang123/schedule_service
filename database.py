@@ -55,16 +55,26 @@ class Database:
     def connect_and_initialize(self):
         self.connect()
 
-        create_table_query = """
+        create_table_queries = [
+        """
             CREATE TABLE IF NOT EXISTS scheduled_userop (
                 userophash VARCHAR(255) PRIMARY KEY,
                 status VARCHAR(255),
                 time DATETIME,
                 task_id VARCHAR(255)
             )
+        """,
         """
+            CREATE TABLE IF NOT EXISTS modified_userop (
+                old_userophash VARCHAR(255) PRIMARY KEY,
+                new_userophash VARCHAR(255)
+            )
+        """
+
+        ]
         with self.cnx.cursor() as cursor:
-            cursor.execute(create_table_query)
+            for query in create_table_queries:
+                cursor.execute(query)
 
         self.cnx.commit()
 
@@ -90,6 +100,18 @@ class Database:
         with self.cnx.cursor() as cursor:
             cursor.execute("SELECT * FROM scheduled_userop")
             return cursor.fetchall()
+
+    @retry_on_failure
+    def update_modified_userop(self, old, new):
+        with self.cnx.cursor() as cursor:
+            query = """
+                INSERT INTO modified_userop (old_userophash, new_userophash) 
+                VALUES (%s, %s)
+                ON DUPLICATE KEY UPDATE
+                new_userophash = VALUES(new_userophash)
+            """
+            cursor.execute(query, (old, new))
+            self.cnx.commit()
 
     @retry_on_failure
     def update_scheduled_userop_status(self, userophash, status):

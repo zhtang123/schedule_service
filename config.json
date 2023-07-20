@@ -1,0 +1,8 @@
+{
+  "polygon-mumbai": {
+    "chainid": 80001
+  },
+  "scroll-testnet": {
+    "chainid": 534353
+  }
+}
